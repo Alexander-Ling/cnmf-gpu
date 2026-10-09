@@ -1,0 +1,15 @@
+# CPU-only checks on GitHub runners: packaging, imports, CLI help, and the tests that do not need a GPU.
+# GPU tests skip automatically when no CUDA device is present; run `pytest -q tests` on a GPU machine before releases.
+name: tests
+on: [push, pull_request]
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[test]"
+      - run: cnmf-gpu --help
+      - run: pytest -q tests

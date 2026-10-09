@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cnmf-gpu"
+version = "0.1.0"
+description = "GPU factorization backend for dylkot/cNMF: a drop-in replacement for the factorize step, same prepare/combine/consensus"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Alexander Ling", email = "alling@bwh.harvard.edu" }]
+keywords = ["cNMF", "NMF", "single-cell", "spatial", "GPU", "torch"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "cnmf>=1.6",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scanpy",
+    "anndata",
+    "pyyaml",
+    "scikit-learn",
+]
+
+[project.urls]
+Homepage = "https://github.com/Alexander-Ling/cnmf-gpu"
+Issues = "https://github.com/Alexander-Ling/cnmf-gpu/issues"
+cNMF = "https://github.com/dylkot/cNMF"
+
+[project.optional-dependencies]
+# The GPU solver needs torch with CUDA. On Linux x86-64 the torch wheel pulls in Triton, which the fused
+# usage-sweep kernel uses; without Triton the solver falls back to a slower pure-torch sweep.
+gpu = ["torch>=2.1"]
+test = ["pytest"]
+
+[project.scripts]
+cnmf-gpu = "cnmf_gpu.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cnmf_gpu*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
