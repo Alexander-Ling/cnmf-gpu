@@ -89,14 +89,15 @@ def test_cd_rule_reaches_kkt_tolerance():
     assert v1 / v0 <= 5 * tol        # post-hoc float64 check of the same optimality statistic
 
 
-def test_fused_w_sweep_matches_reference():
+@pytest.mark.parametrize("k", [7, 33, 70])     # KP = 8, 64, 128: the >32 cases exercise the reduced row block
+def test_fused_w_sweep_matches_reference(k):
     _gpu()
     import torch
     from cnmf_gpu.kernels import HAVE_TRITON, w_sweep_fused, w_sweep_reference
     if not HAVE_TRITON:
         pytest.skip("no triton")
     torch.manual_seed(0)
-    B, n, k, g = 3, 1037, 7, 50
+    B, n, g = 3, 1037, 80
     X = torch.rand(n, g, device="cuda")
     H = torch.rand(B, k, g, device="cuda")
     W = torch.rand(B, n, k, device="cuda")

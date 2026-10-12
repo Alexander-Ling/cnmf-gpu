@@ -15,5 +15,5 @@ so ``factorize`` on any machine does what the run was prepared for.
 """
 from .core import cNMFGPU, GPU_SOLVER_VERSION, gpu_available, select_solver
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["cNMFGPU", "GPU_SOLVER_VERSION", "gpu_available", "select_solver", "__version__"]

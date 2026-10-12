@@ -58,7 +58,7 @@ if HAVE_TRITON:
 
 
 def w_sweep_fused(W: torch.Tensor, XHt: torch.Tensor, HHt: torch.Tensor, active: torch.Tensor,
-                  eps: float, block: int = 128, num_warps: int = 4) -> torch.Tensor:
+                  eps: float, block: int | None = None, num_warps: int = 4) -> torch.Tensor:
     """In-place HALS W sweep on ``W`` (B, n, k, contiguous) for replicates with ``active`` set.
 
     ``XHt`` is (n, B*k) (output of the 2D GEMM X @ [H_1^T ... H_B^T]); ``HHt`` is (B, k, k) contiguous.
@@ -69,6 +69,11 @@ def w_sweep_fused(W: torch.Tensor, XHt: torch.Tensor, HHt: torch.Tensor, active:
     B, n, k = W.shape
     assert W.is_contiguous() and HHt.is_contiguous() and XHt.shape == (n, B * k) and XHt.is_contiguous()
     kp = max(2, triton.next_power_of_2(k))
+    if block is None:
+        # W and XHt blocks ([BLOCK, KP] fp32 each) live in registers. Keep the per-thread footprint constant as KP
+        # grows, otherwise KP=64 (k 33..64) spills to local memory and the sweep runs 4-6x slower than at k<=32
+        # (and far worse on very large n). 128 rows for KP<=32, 64 rows for KP=64, 32 rows for KP=128.
+        block = max(16, 128 * 32 // kp) if kp > 32 else 128
     n_blocks = triton.cdiv(n, block)
     viol = torch.zeros((B, n_blocks), dtype=torch.float32, device=W.device)
     act = active.to(torch.int32)
