@@ -3,11 +3,13 @@
     cnmf-gpu prepare   --output-dir runs --name s1 -c counts.h5ad -k 10 20 30 -n 100 --seed 14 --solver gpu
     cnmf-gpu factorize --output-dir runs --name s1
     cnmf-gpu combine   --output-dir runs --name s1
-    cnmf-gpu consensus --output-dir runs --name s1 --local-density-threshold 0.1
-    cnmf-gpu k_selection_plot --output-dir runs --name s1
+    cnmf-gpu consensus --output-dir runs --name s1 --local-density-threshold 0.1 [--workers 12]
+    cnmf-gpu k_selection_plot --output-dir runs --name s1 [--workers 12]
 
 Options mirror ``cnmf`` 1.7 (same names and defaults); the three ``--solver``/``--gpu-*`` options are new and
-only read by ``prepare`` (``set_solver`` lets you change the choice of an existing run).
+only read by ``prepare`` (``set_solver`` lets you change the choice of an existing run). ``--workers`` runs
+``consensus`` / ``k_selection_plot`` with one K per worker process (cnmf_gpu.parallel); the default 1 is cNMF's serial
+loop. ``--local-density-threshold`` accepts several values.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import argparse
 from cnmf.cnmf import load_df_from_npz
 
 from .core import SOLVERS, cNMFGPU
+from .parallel import run_consensus
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,10 +41,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--densify", action="store_true", default=False, help="[prepare] treat input as dense")
     p.add_argument("--worker-index", type=int, default=0, help="[factorize] index of this worker (from 0)")
     p.add_argument("--skip-completed-runs", action="store_true", default=False, help="[factorize] skip finished replicates")
-    p.add_argument("--local-density-threshold", type=float, default=0.5, help="[consensus] local density filter (2 = none)")
+    p.add_argument("--local-density-threshold", type=float, nargs="+", default=[0.5],
+                   help="[consensus] local density filter(s) (2 = none); several values are run per K")
     p.add_argument("--local-neighborhood-size", type=float, default=0.30, help="[consensus] neighbor fraction for density")
     p.add_argument("--show-clustering", action="store_true", help="[consensus] write the clustergram figure")
     p.add_argument("--build-reference", action="store_true", default=True, help="[consensus] write starCAT reference spectra")
+    p.add_argument("--workers", type=int, default=1,
+                   help="[consensus/k_selection_plot] worker processes, one K each (1 = cNMF's serial loop, 0 = auto from cores and memory)")
+    p.add_argument("--threads-per-worker", type=int, default=0,
+                   help="[consensus/k_selection_plot] BLAS threads per worker (0 = spare cores / workers)")
+    p.add_argument("--max-memory-gb", type=float, default=None,
+                   help="[consensus/k_selection_plot] memory budget for --workers 0 (default 70%% of available memory)")
     p.add_argument("--solver", choices=SOLVERS, default="cpu",
                    help="[prepare/set_solver] factorize solver: cpu (cNMF sklearn cd), gpu, or auto (default cpu)")
     p.add_argument("--gpu-batch-size", type=int, default=16, help="[prepare/set_solver] replicates solved at once on the GPU")
@@ -68,11 +78,21 @@ def main(argv=None):
     elif args.command == "consensus":
         run_params = load_df_from_npz(obj.paths["nmf_replicate_parameters"])
         ks = args.components if args.components else sorted(set(run_params.n_components))
-        for k in ks:
-            obj.consensus(int(k), args.local_density_threshold, args.local_neighborhood_size, args.show_clustering,
-                          args.build_reference, close_clustergram_fig=True)
+        if args.workers == 1:
+            for dt in args.local_density_threshold:
+                for k in ks:
+                    obj.consensus(int(k), dt, args.local_neighborhood_size, args.show_clustering,
+                                  args.build_reference, close_clustergram_fig=True)
+        else:
+            run_consensus(obj, ks, args.local_density_threshold, workers=args.workers, threads_per_worker=args.threads_per_worker,
+                          max_memory_gb=args.max_memory_gb, local_neighborhood_size=args.local_neighborhood_size, show_clustering=args.show_clustering,
+                          build_ref=args.build_reference)
     elif args.command == "k_selection_plot":
-        obj.k_selection_plot(close_fig=True)
+        if args.workers == 1:
+            obj.k_selection_plot(close_fig=True)
+        else:
+            run_consensus(obj, None, [], workers=args.workers, threads_per_worker=args.threads_per_worker,
+                          max_memory_gb=args.max_memory_gb, k_selection=True)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,8 @@
 
 GPU factorization backend for [dylkot/cNMF](https://github.com/dylkot/cNMF). It replaces the `factorize` step
 (the slow one: hundreds of NMF fits per dataset) with a batched GPU solver and leaves `prepare`, `combine`,
-`consensus` and `k_selection_plot` to cNMF's own code, so the outputs are ordinary cNMF outputs.
+`consensus` and `k_selection_plot` to cNMF's own code, so the outputs are ordinary cNMF outputs. Those CPU steps can
+run one K per worker process (`--workers`), which makes post-processing of large runs several times faster.
 
 - **Same algorithm as cNMF's default.** cNMF runs sklearn `non_negative_factorization(solver='cd')`, i.e.
   Cichocki-Phan HALS with a projected-gradient stopping rule. `cnmf-gpu` runs that algorithm, in the same
@@ -55,6 +56,52 @@ cnmf-gpu consensus --output-dir runs --name sample1 --local-density-threshold 0.
 `cnmf-gpu set_solver --solver gpu` switches an already-prepared run. `--total-workers N --worker-index i`
 splits the replicates across workers as in cNMF; give each a different `--gpu-device` to use several GPUs.
 `<name>.gpu_factorize_log.csv` records iterations, convergence and batch timing per replicate.
+
+## Parallel consensus and k-selection (CPU)
+
+cNMF's `consensus` and `k_selection_plot` run one K after another in one process, and none of it uses the GPU. Per K
+they refit usages (NNLS), refit TPM spectra over all genes, regress z-scored TPM on the usages over all genes, and draw
+a clustergram, so with a full transcriptome and many K this post-processing can take longer than the GPU factorization.
+Every pass is independent, so `--workers` runs them in worker processes (`cnmf_gpu.parallel.run_consensus`):
+
+```bash
+cnmf-gpu consensus        --output-dir runs --name sample1 --local-density-threshold 0.1 0.2 --workers 0 --max-memory-gb 40
+cnmf-gpu k_selection_plot --output-dir runs --name sample1 --workers 0
+```
+
+```python
+from cnmf_gpu import run_consensus
+run_consensus(obj, ks=None, density_thresholds=[0.1], workers=0, k_selection=True, max_memory_gb=40)
+```
+
+- **Same results.** Each task is one pass of cNMF's own `consensus` code ((K, density threshold) or the K's
+  k-selection statistics), so the files are the same as cNMF's. The numbers match the serial run to floating-point
+  summation order (about 1e-16 relative in the benchmarks below), not bit for bit.
+- **One copy of the data.** The parent reads the normalized counts and the TPM matrix once and writes them as plain
+  arrays to shared memory (`/dev/shm`); workers map them read-only, so cNMF cannot modify them unnoticed. The parent
+  also writes cNMF's per-K local-density cache beforehand, so all passes are independent.
+- **Memory decides the worker count, cores become threads.** A worker's memory is the transient copies cNMF and sklearn
+  make (measured at up to 1.5x the two matrices) plus 0.5 GiB; threads add none. `--workers 0` takes as many workers as
+  fit in `--max-memory-gb` (default 70% of available memory, minus the shared copy) and at most cores - 1;
+  `--threads-per-worker 0` (default) gives the spare cores to each worker as BLAS/OpenMP threads. The estimate is printed.
+- **Robust to interruption.** SIGTERM cleans up the shared-memory directory; directories left by killed runs are
+  removed at the next start. A worker that dies (usually out of memory) stops the run with a message naming the sizing.
+- Workers start with the `spawn` method (forking a process that has used OpenMP aborts), which re-imports the calling
+  script: call `run_consensus` from a script only under `if __name__ == "__main__":`. The CLI and notebooks need nothing.
+- `--workers 1` (the default) is cNMF's serial loop, unchanged.
+
+Benchmark (Ryzen 9950X3D, 32 threads, WSL2, `--workers 0 --max-memory-gb 40`; serial = cNMF's own loop with all BLAS
+threads; all outputs compared with the serial run's files):
+
+| Run | Passes | Workers x threads | Peak RAM | Parallel | Serial | Max relative difference |
+|---|---|---|---|---|---|---|
+| scRNA, 64k cells x 2,000 genes, 10 K x 2 thresholds + stats | 30 | 12 x 2 | 30.7 GB | 122 s | 840 s | 9e-17 |
+| scRNA, 157k cells x 2,000 genes, 13 K x 2 thresholds + stats | 39 | 5 x 6 | 30.5 GB | 667 s | 2,280 s | 2e-16 |
+| Xenium, 24.7k cells x 366 genes, 36 K x 1 threshold + stats | 72 | 31 x 1 | 16.4 GB | 18 s | 81 s | 7e-16 |
+
+The speed-up is bounded by the slowest single pass and by memory bandwidth: a pass runs 1.5-3x slower when many run
+at once, and the sparse products inside cNMF's refits are single-threaded. A larger memory budget buys more workers;
+beyond about 10 concurrent passes the gain is small.
 
 ## What is and is not the same as cNMF
 
@@ -139,7 +186,8 @@ pytest -q tests
 
 Covers: Triton kernel against the torch reference sweep, KKT optimality at the stop, batched versus single
 fits, reproducibility, sparse input, solver selection, and an end-to-end prepare/factorize/combine/consensus
-run where GPU and CPU consensus programs must agree. GPU tests skip automatically without a CUDA device; the
+run where GPU and CPU consensus programs must agree, and parallel consensus / k-selection against cNMF's serial
+code (same files, same numbers). GPU tests skip automatically without a CUDA device; the
 GitHub workflow runs the CPU-only subset.
 
 ## Citing
